@@ -1,5 +1,3 @@
-<img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
-
 # Windows PiP (Picture-in-Picture) 瀏覽器視窗擷取工具
 
 這是一個用 C\# WinForms 開發的 Windows 桌面應用程式，可以擷取瀏覽器視窗內容並以 Picture-in-Picture 模式顯示。
