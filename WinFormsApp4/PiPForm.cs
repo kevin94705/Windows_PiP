@@ -10,7 +10,6 @@ using System.IO;
 
 namespace WinFormsApp4
 {
-    // 修改：在 PiPSettings 中添加工具列狀態
     public class PiPSettings
     {
         public int WindowX { get; set; } = 100;
@@ -23,7 +22,7 @@ namespace WinFormsApp4
         public int CutHeight { get; set; } = 270;
         public string LastSelectedWindow { get; set; } = "";
         public int WindowOpacity { get; set; } = 100;
-        public bool ToolbarVisible { get; set; } = true; // 新增：工具列顯示狀態
+        public int FormScale { get; set; } = 100; // 新增：表單縮放比例
     }
 
     public partial class PiPForm : Form
@@ -34,24 +33,30 @@ namespace WinFormsApp4
             "PiPTool",
             "settings.json"
         );
-        // 新增：工具列隱藏/顯示相關變數
+
+        // 工具列相關變數
         private Button btnRereshWindowsList;
-        private Button btnToggleToolbar;
         private bool isToolbarVisible = true;
         private int originalFormHeight;
-        private int toolbarHeight;
+        private int toolbarHeight = 60;
 
-        // 新增：直接儲存裁切區域的變數
+        // 新增：尺寸調整相關變數
+        private TrackBar trackBarScale;
+        private Label lblScale;
+        private Size originalFormSize;
+        private Size baseFormSize = new Size(480, 320); // 基準尺寸
+
+        // 直接儲存裁切區域的變數
         private int cutX = 0;
         private int cutY = 0;
         private int cutWidth = 480;
         private int cutHeight = 270;
 
-        // 新增：透明度控制項
+        // 透明度控制項
         private TrackBar trackBarOpacity;
         private Label lblOpacity;
 
-        // 新增：區塊選取相關變數
+        // 區塊選取相關變數
         private Button btnToggleRegionSelect;
         private bool isRegionSelectMode = false;
         private bool isSelecting = false;
@@ -60,7 +65,7 @@ namespace WinFormsApp4
         private Bitmap originalCapturedImage = null;
         private Timer saveDelayTimer;
 
-        // WinAPI 宣告 (保持原有的)
+        // WinAPI 宣告
         [DllImport("user32.dll")]
         static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
         [DllImport("user32.dll")]
@@ -109,8 +114,14 @@ namespace WinFormsApp4
 
             this.FormBorderStyle = FormBorderStyle.None;
             this.TopMost = true;
-            this.Width = settings?.WindowWidth ?? 720;
-            this.Height = settings?.WindowHeight ?? 480;
+
+            // 使用基準尺寸和縮放比例來設定初始尺寸
+            int scale = settings?.FormScale ?? 100;
+            int scaledWidth = (int)(baseFormSize.Width * scale / 100.0);
+            int scaledHeight = (int)(baseFormSize.Height * scale / 100.0);
+
+            this.Width = scaledWidth;
+            this.Height = scaledHeight;
             this.StartPosition = FormStartPosition.Manual;
             this.Location = new Point(settings?.WindowX ?? 100, settings?.WindowY ?? 100);
             this.BackColor = Color.LimeGreen;
@@ -126,22 +137,41 @@ namespace WinFormsApp4
                 this.Opacity = settings.WindowOpacity / 100.0;
             }
 
-            // 記錄原始高度
+            // 記錄原始尺寸
+            originalFormSize = this.Size;
             originalFormHeight = this.Height;
 
-            // 增加標題列高度來容納所有控制項
+            // 創建工具列
+            CreateToolbar();
+
+            // 創建圖片顯示區域
+            CreatePictureBox();
+
+            SetClickThrough(isClickThrough);
+
+            captureTimer = new Timer();
+            captureTimer.Interval = 33;
+            captureTimer.Tick += CaptureTimer_Tick;
+            captureTimer.Start();
+
+            RefreshWindowList();
+            ApplySettings();
+        }
+
+        private void CreateToolbar()
+        {
+            // 調整工具列高度以容納更多控制項
+            toolbarHeight = 90; // 增加高度以容納第三行
+
             pnlTitleBar = new Panel()
             {
-                Height = 60,
+                Height = toolbarHeight,
                 Dock = DockStyle.Top,
                 BackColor = Color.DimGray,
                 Cursor = Cursors.SizeAll
             };
             pnlTitleBar.MouseDown += PnlTitleBar_MouseDown;
             this.Controls.Add(pnlTitleBar);
-
-            // 記錄工具列高度
-            toolbarHeight = pnlTitleBar.Height;
 
             // 第一行控制項
             Button btnClose = new Button()
@@ -162,33 +192,14 @@ namespace WinFormsApp4
             btnClose.FlatAppearance.MouseOverBackColor = Color.DarkRed;
             btnClose.Click += BtnClose_Click;
             pnlTitleBar.Controls.Add(btnClose);
-            
-            // 新增：隱藏/顯示工具列按鈕（放在關閉按鈕旁邊）
-            btnToggleToolbar = new Button()
-            {
-                Text = "▲", // 上箭頭表示隱藏
-                Font = new Font("Arial", 8, FontStyle.Bold),
-                Width = 25,
-                Height = 25,
-                Left = btnClose.Left - 30, // 放在關閉按鈕左邊
-                Top = 5,
-                BackColor = Color.Gray,
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Cursor = Cursors.Hand                
-            };
-            btnToggleToolbar.FlatAppearance.BorderSize = 0;
-            btnToggleToolbar.FlatAppearance.MouseOverBackColor = Color.DarkGray;
-            btnToggleToolbar.Click += BtnToggleToolbar_Click;
-            pnlTitleBar.Controls.Add(btnToggleToolbar);
+
             btnRereshWindowsList = new Button()
             {
-                Text = "⟳", // 上箭頭表示隱藏
+                Text = "⟳",
                 Font = new Font("Arial", 8, FontStyle.Bold),
                 Width = 25,
                 Height = 25,
-                Left = btnToggleToolbar.Left - 30, // 放在關閉按鈕左邊
+                Left = btnClose.Left - 30,
                 Top = 5,
                 BackColor = Color.Gray,
                 ForeColor = Color.White,
@@ -200,11 +211,12 @@ namespace WinFormsApp4
             btnRereshWindowsList.FlatAppearance.MouseDownBackColor = Color.Aqua;
             btnRereshWindowsList.Click += RefreshWindowList_Click;
             pnlTitleBar.Controls.Add(btnRereshWindowsList);
+
             comboWindows = new ComboBox()
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Height = 25,
-                Width = 140, // 再縮小一點給隱藏按鈕留空間
+                Width = 140,
                 Left = 5,
                 Top = 5,
             };
@@ -239,7 +251,7 @@ namespace WinFormsApp4
             Label lblOpacityText = new Label()
             {
                 Text = "透明度:",
-                Width = 50,
+                Width = 60,
                 Height = 20,
                 Left = 5,
                 Top = 35,
@@ -253,7 +265,7 @@ namespace WinFormsApp4
                 Minimum = 20,
                 Maximum = 100,
                 Value = settings?.WindowOpacity ?? 100,
-                Width = 120,
+                Width = 100, // 縮小寬度
                 Height = 25,
                 Left = lblOpacityText.Right + 5,
                 Top = 32,
@@ -268,9 +280,9 @@ namespace WinFormsApp4
             lblOpacity = new Label()
             {
                 Text = $"{trackBarOpacity.Value}%",
-                Width = 40,
+                Width = 35, // 縮小寬度
                 Height = 20,
-                Left = trackBarOpacity.Right + 5,
+                Left = trackBarOpacity.Right + 3,
                 Top = 35,
                 ForeColor = Color.White,
                 TextAlign = ContentAlignment.MiddleLeft,
@@ -281,9 +293,9 @@ namespace WinFormsApp4
             Button btnResetOpacity = new Button()
             {
                 Text = "重設",
-                Width = 45,
+                Width = 40, // 縮小寬度
                 Height = 20,
-                Left = lblOpacity.Right + 5,
+                Left = lblOpacity.Right + 3,
                 Top = 35,
                 BackColor = Color.Gray,
                 ForeColor = Color.White,
@@ -295,6 +307,123 @@ namespace WinFormsApp4
             btnResetOpacity.Click += BtnResetOpacity_Click;
             pnlTitleBar.Controls.Add(btnResetOpacity);
 
+            // 第三行：尺寸縮放控制項 - 調整位置避免重疊
+            Label lblScaleText = new Label()
+            {
+                Text = "視窗大小:",
+                Width = 60,
+                Height = 20,
+                Left = 5,
+                Top = 65,
+                ForeColor = Color.White,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            pnlTitleBar.Controls.Add(lblScaleText);
+
+            trackBarScale = new TrackBar()
+            {
+                Minimum = 50,
+                Maximum = 300,
+                Value = settings?.FormScale ?? 100,
+                Width = 100, // 縮小寬度避免重疊
+                Height = 25,
+                Left = lblScaleText.Right + 5, // 70
+                Top = 62,                
+                TickFrequency = 25,
+                SmallChange = 10,
+                LargeChange = 25,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left
+            };
+            trackBarScale.ValueChanged += TrackBarScale_ValueChanged;
+            pnlTitleBar.Controls.Add(trackBarScale);
+
+            lblScale = new Label()
+            {
+                Text = $"{trackBarScale.Value}%",
+                Width = 35, // 縮小寬度
+                Height = 20,
+                Left = trackBarScale.Right + 3, // 178
+                Top = 65,
+                ForeColor = Color.White,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left
+            };
+            pnlTitleBar.Controls.Add(lblScale);
+
+            Button btnResetScale = new Button()
+            {
+                Text = "重設",
+                Width = 40, // 縮小寬度
+                Height = 20,
+                Left = lblScale.Right + 3, // 216
+                Top = 65,
+                BackColor = Color.Gray,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Arial", 8),
+                Cursor = Cursors.Hand
+            };
+            btnResetScale.FlatAppearance.BorderSize = 0;
+            btnResetScale.Click += BtnResetScale_Click;
+            pnlTitleBar.Controls.Add(btnResetScale);
+
+            // 預設尺寸快捷按鈕 - 調整位置
+            Button btnSizeSmall = new Button()
+            {
+                Text = "小",
+                Width = 20, // 縮小寬度
+                Height = 20,
+                Left = btnResetScale.Right + 8, // 264
+                Top = 65,
+                BackColor = Color.SteelBlue,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Arial", 8),
+                Cursor = Cursors.Hand
+            };
+            btnSizeSmall.FlatAppearance.BorderSize = 0;
+            btnSizeSmall.Click += (s, e) => { trackBarScale.Value = 75; };
+            pnlTitleBar.Controls.Add(btnSizeSmall);
+
+            Button btnSizeMedium = new Button()
+            {
+                Text = "中",
+                Width = 20, // 縮小寬度
+                Height = 20,
+                Left = btnSizeSmall.Right + 2, // 286
+                Top = 65,
+                BackColor = Color.SteelBlue,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Arial", 8),
+                Cursor = Cursors.Hand
+            };
+            btnSizeMedium.FlatAppearance.BorderSize = 0;
+            btnSizeMedium.Click += (s, e) => { trackBarScale.Value = 100; };
+            pnlTitleBar.Controls.Add(btnSizeMedium);
+
+            Button btnSizeLarge = new Button()
+            {
+                Text = "大",
+                Width = 20, // 縮小寬度
+                Height = 20,
+                Left = btnSizeMedium.Right + 2, // 308
+                Top = 65,
+                BackColor = Color.SteelBlue,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Arial", 8),
+                Cursor = Cursors.Hand
+            };
+            btnSizeLarge.FlatAppearance.BorderSize = 0;
+            btnSizeLarge.Click += (s, e) => { trackBarScale.Value = 150; };
+            pnlTitleBar.Controls.Add(btnSizeLarge);
+            trackBarScale.BringToFront();
+        }
+
+
+        private void CreatePictureBox()
+        {
             pictureBox1 = new PictureBox()
             {
                 BackColor = Color.Black,
@@ -315,114 +444,86 @@ namespace WinFormsApp4
 
             this.Controls.Add(pictureBox1);
             pictureBox1.BringToFront();
-
-            SetClickThrough(isClickThrough);
-
-            captureTimer = new Timer();
-            captureTimer.Interval = 33;
-            captureTimer.Tick += CaptureTimer_Tick;
-            captureTimer.Start();
-
-            RefreshWindowList();
-            ApplySettings();
         }
-        // 新增：切換工具列顯示/隱藏的事件處理
-        private void BtnToggleToolbar_Click(object sender, EventArgs e)
-        {
-            ToggleToolbar();
-        }
-        private void RefreshWindowList_Click(object sender, EventArgs e)
-        {
-            RefreshWindowList();
-        }
-        // 新增：切換工具列的主要方法
-        private void ToggleToolbar()
-        {
-            isToolbarVisible = !isToolbarVisible;
 
-            if (isToolbarVisible)
+        // 新增：尺寸縮放滑桿事件處理
+        private void TrackBarScale_ValueChanged(object sender, EventArgs e)
+        {
+            int scale = trackBarScale.Value;
+
+            // 計算新的尺寸
+            int newWidth = (int)(baseFormSize.Width * scale / 100.0);
+            int newHeight = (int)(baseFormSize.Height * scale / 100.0);
+
+            // 更新表單尺寸
+            this.Size = new Size(newWidth, newHeight);
+
+            // 更新原始高度記錄
+            originalFormHeight = newHeight;
+            originalFormSize = this.Size;
+
+            // 更新標籤顯示
+            lblScale.Text = $"{scale}%";
+
+            // 即時儲存設定
+            if (settings != null)
             {
-                // 顯示工具列
-                ShowToolbar();
-            }
-            else
-            {
-                // 隱藏工具列
-                HideToolbar();
+                settings.FormScale = scale;
+                settings.WindowWidth = newWidth;
+                settings.WindowHeight = newHeight;
+                SaveSettingsDelayed();
             }
         }
-        // 新增：隱藏工具列
+
+        // 新增：重設尺寸按鈕事件
+        private void BtnResetScale_Click(object sender, EventArgs e)
+        {
+            trackBarScale.Value = 100;
+        }
+
+        // 修改：隱藏工具列 - 完全隱藏整個 panel
         private void HideToolbar()
         {
-            // 隱藏工具列中的所有控制項，但保留隱藏按鈕
-            foreach (Control control in pnlTitleBar.Controls)
-            {
-                if (control != btnToggleToolbar)
-                {
-                    control.Visible = false;
-                }
-            }
+            if (!isToolbarVisible) return;
 
-            // 改變按鈕文字和位置
-            btnToggleToolbar.Text = "▼"; // 下箭頭表示顯示
-            btnToggleToolbar.Left = 5; // 移到左邊
-            btnToggleToolbar.Top = 2;
-            btnToggleToolbar.Width = 30;
-
-            // 縮小工具列高度
-            pnlTitleBar.Height = 25;
+            pnlTitleBar.Visible = false;
+            isToolbarVisible = false;
 
             // 調整視窗高度（變小）
-            int newHeight = originalFormHeight - (toolbarHeight - 25);
-            this.Height = newHeight;
+            this.Height = originalFormHeight - toolbarHeight;
 
-            // 調整 PictureBox 位置
-            pictureBox1.Top = pnlTitleBar.Bottom + 2;
-            pictureBox1.Height = this.ClientSize.Height - pnlTitleBar.Height - 4;
-
-            // 移除拖拽功能（因為工具列太小）
-            pnlTitleBar.Cursor = Cursors.Default;
+            // 調整 PictureBox 位置和大小
+            pictureBox1.Top = 2;
+            pictureBox1.Height = this.ClientSize.Height - 4;
         }
 
-        // 新增：顯示工具列
+        // 修改：顯示工具列 - 完全顯示整個 panel
         private void ShowToolbar()
         {
-            // 顯示工具列中的所有控制項
-            foreach (Control control in pnlTitleBar.Controls)
-            {
-                control.Visible = true;
-            }
+            if (isToolbarVisible) return;
 
-            // 恢復按鈕文字和位置
-            btnToggleToolbar.Text = "▲"; // 上箭頭表示隱藏
-            btnToggleToolbar.Left = pnlTitleBar.Width - 65; // 回到原位（關閉按鈕左邊）
-            btnToggleToolbar.Top = 5;
-            btnToggleToolbar.Width = 25;
-            btnToggleToolbar.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-
-            // 恢復工具列高度
-            pnlTitleBar.Height = toolbarHeight; // 60
+            pnlTitleBar.Visible = true;
+            isToolbarVisible = true;
 
             // 恢復視窗高度
             this.Height = originalFormHeight;
 
-            // 調整 PictureBox 位置
+            // 調整 PictureBox 位置和大小
             pictureBox1.Top = pnlTitleBar.Bottom + 2;
             pictureBox1.Height = this.ClientSize.Height - pnlTitleBar.Height - 4;
-
-            // 恢復拖拽功能
-            pnlTitleBar.Cursor = Cursors.SizeAll;
         }
-        // 新增：透明度滑桿事件處理
+
+        private void RefreshWindowList_Click(object sender, EventArgs e)
+        {
+            RefreshWindowList();
+        }
+
+        // 透明度滑桿事件處理
         private void TrackBarOpacity_ValueChanged(object sender, EventArgs e)
         {
-            // 更新視窗透明度 (TrackBar 值轉換為 0.0-1.0 範圍)
             this.Opacity = trackBarOpacity.Value / 100.0;
-
-            // 更新標籤顯示
             lblOpacity.Text = $"{trackBarOpacity.Value}%";
 
-            // 即時儲存設定
             if (settings != null)
             {
                 settings.WindowOpacity = trackBarOpacity.Value;
@@ -430,21 +531,19 @@ namespace WinFormsApp4
             }
         }
 
-        // 新增：重設透明度按鈕事件
+        // 重設透明度按鈕事件
         private void BtnResetOpacity_Click(object sender, EventArgs e)
         {
             trackBarOpacity.Value = 100;
-            // ValueChanged 事件會自動觸發，更新透明度和標籤
         }
 
-        // 新增：延遲儲存設定
+        // 延遲儲存設定
         private void SaveSettingsDelayed()
         {
-            // 使用計時器延遲儲存，避免拖拉時頻繁寫入
             if (saveDelayTimer == null)
             {
                 saveDelayTimer = new Timer();
-                saveDelayTimer.Interval = 500; // 500ms 後儲存
+                saveDelayTimer.Interval = 500;
                 saveDelayTimer.Tick += (s, e) =>
                 {
                     saveDelayTimer.Stop();
@@ -495,7 +594,7 @@ namespace WinFormsApp4
                 settings.CutHeight = cutHeight;
                 settings.LastSelectedWindow = comboWindows.SelectedItem?.ToString() ?? "";
                 settings.WindowOpacity = trackBarOpacity?.Value ?? 100;
-                settings.ToolbarVisible = isToolbarVisible; // 儲存工具列狀態
+                settings.FormScale = trackBarScale?.Value ?? 100; // 新增：儲存縮放比例
 
                 string json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(settingsPath, json);
@@ -516,8 +615,6 @@ namespace WinFormsApp4
             int y = Math.Max(0, Math.Min(settings.WindowY, screenBounds.Height - settings.WindowHeight));
 
             this.Location = new Point(x, y);
-            this.Width = Math.Max(300, Math.Min(settings.WindowWidth, screenBounds.Width));
-            this.Height = Math.Max(200, Math.Min(settings.WindowHeight, screenBounds.Height));
 
             cutX = settings.CutX;
             cutY = settings.CutY;
@@ -532,12 +629,12 @@ namespace WinFormsApp4
                 lblOpacity.Text = $"{opacity}%";
             }
 
-            // 套用工具列顯示狀態
-            isToolbarVisible = settings.ToolbarVisible;
-            if (!isToolbarVisible)
+            // 新增：套用縮放比例設定
+            int scale = Math.Max(50, Math.Min(200, settings.FormScale));
+            if (trackBarScale != null)
             {
-                // 延遲隱藏工具列，確保所有控制項都已初始化
-                this.BeginInvoke(new Action(() => HideToolbar()));
+                trackBarScale.Value = scale;
+                lblScale.Text = $"{scale}%";
             }
 
             if (!string.IsNullOrEmpty(settings.LastSelectedWindow))
@@ -556,8 +653,7 @@ namespace WinFormsApp4
             }
         }
 
-        // 修改：ProcessCmdKey 新增透明度快捷鍵
-        // 修改：ProcessCmdKey 新增工具列切換快捷鍵
+        // 修改：ProcessCmdKey 新增尺寸調整快捷鍵
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (keyData == (Keys.Control | Keys.Shift | Keys.T))
@@ -566,30 +662,14 @@ namespace WinFormsApp4
                 {
                     isClickThrough = false;
                     SetClickThrough(false);
-
-                    // 取消穿透時自動顯示工具列
-                    if (!isToolbarVisible)
-                    {
-                        ShowToolbar();
-                    }
+                    ShowToolbar();
                 }
                 else
                 {
                     isClickThrough = true;
                     SetClickThrough(true);
-
-                    // 啟用穿透時自動隱藏工具列
-                    if (isToolbarVisible)
-                    {
-                        HideToolbar();
-                    }
+                    HideToolbar();
                 }
-                return true;
-            }
-            // 新增：工具列切換快捷鍵
-            else if (keyData == (Keys.Control | Keys.Shift | Keys.H))
-            {
-                ToggleToolbar();
                 return true;
             }
             // 透明度快捷鍵
@@ -609,10 +689,27 @@ namespace WinFormsApp4
                 }
                 return true;
             }
+            // 新增：尺寸調整快捷鍵
+            else if (keyData == (Keys.Control | Keys.Shift | Keys.Add) || keyData == (Keys.Control | Keys.Shift | Keys.Oemplus))
+            {
+                if (trackBarScale.Value < trackBarScale.Maximum)
+                {
+                    trackBarScale.Value = Math.Min(trackBarScale.Maximum, trackBarScale.Value + 10);
+                }
+                return true;
+            }
+            else if (keyData == (Keys.Control | Keys.Shift | Keys.Subtract) || keyData == (Keys.Control | Keys.Shift | Keys.OemMinus))
+            {
+                if (trackBarScale.Value > trackBarScale.Minimum)
+                {
+                    trackBarScale.Value = Math.Max(trackBarScale.Minimum, trackBarScale.Value - 10);
+                }
+                return true;
+            }
             return base.ProcessCmdKey(ref msg, keyData);
         }
 
-        // 修改：計算選取區域並更新裁切變數
+        // 計算選取區域並更新裁切變數
         private void CalculateSelectionRegion()
         {
             if (pictureBox1.Image == null || originalCapturedImage == null) return;
@@ -656,19 +753,17 @@ namespace WinFormsApp4
             if (selectionWidth < 1) selectionWidth = 1;
             if (selectionHeight < 1) selectionHeight = 1;
 
-            // 更新裁切變數（不使用數值控制項）
+            // 更新裁切變數
             cutX = Math.Max(0, imageStartX);
             cutY = Math.Max(0, imageStartY);
             cutWidth = selectionWidth;
             cutHeight = selectionHeight;
 
-            // 顯示選取結果
             MessageBox.Show($"已選取區域:\nX: {cutX}\nY: {cutY}\nWidth: {cutWidth}\nHeight: {cutHeight}\n\n" +
                           $"原始視窗尺寸: {imageSize.Width} x {imageSize.Height}",
                           "區塊選取完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
-        // 修改：CaptureTimer_Tick 使用裁切變數而非數值控制項
         private void CaptureTimer_Tick(object sender, EventArgs e)
         {
             if (targetHwnd == IntPtr.Zero) return;
@@ -690,7 +785,6 @@ namespace WinFormsApp4
 
                     if (success)
                     {
-                        // 使用裁切變數而非數值控制項
                         int currentCutX = Math.Min(cutX, width - 1);
                         int currentCutY = Math.Min(cutY, height - 1);
                         int currentCutW = Math.Min(cutWidth, width - currentCutX);
@@ -705,12 +799,11 @@ namespace WinFormsApp4
                 }
                 catch
                 {
-                    // 擷取或裁切錯誤忽略或記錄
+                    // 擷取或裁切錯誤忽略
                 }
             }
         }
 
-        // 修改：點擊座標顯示功能使用裁切變數
         private void PictureBox1_MouseClick(object sender, MouseEventArgs e)
         {
             if (isRegionSelectMode) return;
@@ -735,18 +828,11 @@ namespace WinFormsApp4
             {
                 int imageX = (int)(relativeX / scale);
                 int imageY = (int)(relativeY / scale);
-                int originalX = imageX + cutX; // 使用裁切變數
-                int originalY = imageY + cutY; // 使用裁切變數
-
-                //MessageBox.Show($"點擊位置: ({originalX}, {originalY})", "座標", MessageBoxButtons.OK);
-            }
-            else
-            {
-                //MessageBox.Show("點擊在圖片範圍外", "提醒", MessageBoxButtons.OK);
+                int originalX = imageX + cutX;
+                int originalY = imageY + cutY;
             }
         }
 
-        // 保持其他方法不變...
         private void BtnToggleRegionSelect_Click(object sender, EventArgs e)
         {
             isRegionSelectMode = !isRegionSelectMode;
@@ -917,9 +1003,9 @@ namespace WinFormsApp4
                     if (!string.IsNullOrEmpty(windowTitle))
                     {
                         var lowerWindowTitle = windowTitle.ToLower();
-                        if (!windows.ContainsKey(windowTitle) && 
-                        (lowerWindowTitle.Contains("brave") || 
-                        lowerWindowTitle.Contains("chrome") || 
+                        if (!windows.ContainsKey(windowTitle) &&
+                        (lowerWindowTitle.Contains("brave") ||
+                        lowerWindowTitle.Contains("chrome") ||
                         lowerWindowTitle.Contains("edge") ||
                         lowerWindowTitle.Contains("firefox")))
                         {
@@ -944,28 +1030,18 @@ namespace WinFormsApp4
             }
         }
 
-        // 修改 BtnToggleClickThrough_Click 方法
         private void BtnToggleClickThrough_Click(object sender, EventArgs e)
         {
             isClickThrough = !isClickThrough;
             SetClickThrough(isClickThrough);
 
-            // 新增：自動切換工具列狀態
             if (isClickThrough)
             {
-                // 啟用穿透時自動隱藏工具列
-                if (isToolbarVisible)
-                {
-                    HideToolbar();
-                }
+                HideToolbar();
             }
             else
             {
-                // 取消穿透時自動顯示工具列
-                if (!isToolbarVisible)
-                {
-                    ShowToolbar();
-                }
+                ShowToolbar();
             }
         }
 
@@ -978,10 +1054,9 @@ namespace WinFormsApp4
                 exStyle = (exStyle & ~WS_EX_TRANSPARENT) | WS_EX_LAYERED;
             SetWindowLong(this.Handle, GWL_EXSTYLE, exStyle);
 
-            // 更新按鈕顯示狀態
             UpdateClickThroughButtonText(enabled);
         }
-        // 新增：更新穿透按鈕文字的方法
+
         private void UpdateClickThroughButtonText(bool enabled)
         {
             if (btnToggleClickThrough != null)
